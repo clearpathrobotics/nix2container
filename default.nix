@@ -44,25 +44,30 @@ let
     '';
   });
 
-  copyToDockerDaemon = image: pkgs.writeShellScriptBin "copy-to-docker-daemon" ''
+  writeSkopeoApplication = name: text: pkgs.writeShellApplication {
+    inherit name text;
+    runtimeInputs = [ pkgs.jq skopeo-nix2container ];
+  };
+
+  copyToDockerDaemon = image: writeSkopeoApplication "copy-to-docker-daemon" ''
     echo "Copy to Docker daemon image ${image.imageName}:${image.imageTag}"
-    ${skopeo-nix2container}/bin/skopeo --insecure-policy copy nix:${image} docker-daemon:${image.imageName}:${image.imageTag} $@
+    skopeo --insecure-policy copy nix:${image} docker-daemon:${image.imageName}:${image.imageTag} $@
   '';
 
-  copyToRegistry = image: pkgs.writeShellScriptBin "copy-to-registry" ''
+  copyToRegistry = image: pkgs.writeSkopeoApplication "copy-to-registry" ''
     echo "Copy to Docker registry image ${image.imageName}:${image.imageTag}"
-    ${skopeo-nix2container}/bin/skopeo --insecure-policy copy nix:${image} docker://${image.imageName}:${image.imageTag} $@
+    skopeo --insecure-policy copy nix:${image} docker://${image.imageName}:${image.imageTag} $@
   '';
 
-  copyTo = image: pkgs.writeShellScriptBin "copy-to" ''
+  copyTo = image: pkgs.writeSkopeoApplication "copy-to" ''
     echo Running skopeo --insecure-policy copy nix:${image} '$@'
-    ${skopeo-nix2container}/bin/skopeo --insecure-policy copy nix:${image} $@
+    skopeo --insecure-policy copy nix:${image} $@
   '';
 
-  copyToPodman = image: pkgs.writeShellScriptBin "copy-to-podman" ''
+  copyToPodman = image: pkgs.writeSkopeoApplication "copy-to-podman" ''
     echo "Copy to podman image ${image.imageName}:${image.imageTag}"
-    ${skopeo-nix2container}/bin/skopeo --insecure-policy copy nix:${image} containers-storage:${image.imageName}:${image.imageTag}
-    ${skopeo-nix2container}/bin/skopeo --insecure-policy inspect containers-storage:${image.imageName}:${image.imageTag}
+    skopeo --insecure-policy copy nix:${image} containers-storage:${image.imageName}:${image.imageTag}
+    skopeo --insecure-policy inspect containers-storage:${image.imageName}:${image.imageTag}
   '';
 
   # Pull an image from a registry with Skopeo and translate it to a
@@ -177,22 +182,18 @@ let
 
       # Convenience scripts for manifest-updating.
       filter = ''.manifests[] | select((.platform.os=="${os}") and (.platform.architecture=="${arch}")) | .digest'';
-      getManifest = pkgs.writeShellApplication {
-        name = "get-manifest";
-        runtimeInputs = [ pkgs.jq skopeo-nix2container ];
-        text = ''
-          set -e
-          manifest=$(skopeo inspect docker://${registryUrl}/${imageName}:${imageTag} --raw | jq)
-          if echo "$manifest" | jq -e .manifests >/dev/null; then
-            # Multi-arch image, pick the one that matches the supplied platform details.
-            hash=$(echo "$manifest" | jq -r '${filter}')
-            skopeo inspect "docker://${registryUrl}/${imageName}@$hash" --raw | jq
-          else
-            # Single-arch image, return the initial response.
-            echo "$manifest"
-          fi
-        '';
-      };
+      getManifest = writeSkopeoApplication "get-manifest" ''
+        set -e
+        manifest=$(skopeo inspect docker://${registryUrl}/${imageName}:${imageTag} --raw | jq)
+        if echo "$manifest" | jq -e .manifests >/dev/null; then
+          # Multi-arch image, pick the one that matches the supplied platform details.
+          hash=$(echo "$manifest" | jq -r '${filter}')
+          skopeo inspect "docker://${registryUrl}/${imageName}@$hash" --raw | jq
+        else
+          # Single-arch image, return the initial response.
+          echo "$manifest"
+        fi
+      '';
 
     in pkgs.runCommand "nix2container-${imageName}.json" { passthru = { inherit getManifest; }; } ''
       ${nix2container-bin}/bin/nix2container image-from-manifest $out ${imageManifest} ${blobMapFile}
